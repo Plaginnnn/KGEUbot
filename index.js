@@ -1,14 +1,19 @@
+// Импорт необходимых модулей
 import axios from 'axios'
 import { Markup, Telegraf, session } from 'telegraf'
 
+// Токен бота
 const token = '7415179094:AAHyPLljfNicW5Kn_owAqbwmOhz5tnyn7wA'
 const bot = new Telegraf(token)
 
+// Использование сессий для хранения состояния пользователя
 bot.use(session())
 
+// Хранение данных пользователей и кэш расписания
 const users = new Map()
 let scheduleCache = new Map()
 
+// Функция для создания главного меню
 const createMainMenu = (isAuthenticated, userName = '') => {
 	const buttons = [
 		['🌐 Наши соц. сети'],
@@ -25,6 +30,7 @@ const createMainMenu = (isAuthenticated, userName = '') => {
 	return Markup.keyboard(buttons).resize()
 }
 
+// Функция для создания меню расписания
 const createScheduleMenu = Markup.keyboard([
 	['Расписание на завтра'],
 	['Расписание на текущую неделю'],
@@ -32,6 +38,7 @@ const createScheduleMenu = Markup.keyboard([
 	['Вернуться в главное меню'],
 ]).resize()
 
+// Функция для удаления предыдущих сообщений
 const deleteAllPreviousMessages = async ctx => {
 	if (ctx.chat && ctx.message) {
 		const currentMessageId = ctx.message.message_id
@@ -48,6 +55,7 @@ const deleteAllPreviousMessages = async ctx => {
 	}
 }
 
+// Инициализация сессии
 const initSession = (ctx, next) => {
 	if (!ctx.session) {
 		ctx.session = {}
@@ -57,6 +65,7 @@ const initSession = (ctx, next) => {
 
 bot.use(initSession)
 
+// Middleware для проверки авторизации
 const authMiddleware = (ctx, next) => {
 	const userId = ctx.from.id
 	if (users.has(userId)) {
@@ -66,10 +75,12 @@ const authMiddleware = (ctx, next) => {
 	ctx.reply('Пожалуйста, авторизуйтесь с помощью кнопки "🔐 Войти"')
 }
 
+// Функция для получения сокращенного имени
 const getShortName = (lastName, firstName, parentName) => {
 	return `${lastName} ${firstName[0]}.${parentName[0]}.`
 }
 
+// Функция для получения расписания с сервера
 const fetchSchedule = async (token, week) => {
 	try {
 		const response = await axios.get(
@@ -85,6 +96,7 @@ const fetchSchedule = async (token, week) => {
 	}
 }
 
+// Функция для кэширования всех расписаний
 const cacheAllSchedules = async token => {
 	for (let week = 1; week <= 30; week++) {
 		const schedule = await fetchSchedule(token, week)
@@ -97,6 +109,7 @@ const cacheAllSchedules = async token => {
 	}
 }
 
+// Функция форматирования даты
 const formatDate = dateString => {
 	const date = new Date(dateString)
 	return date.toLocaleDateString('ru-RU', {
@@ -106,6 +119,7 @@ const formatDate = dateString => {
 	})
 }
 
+// Функция получения дня недели
 const getDayOfWeek = dateString => {
 	const date = new Date(dateString)
 	const days = [
@@ -120,6 +134,7 @@ const getDayOfWeek = dateString => {
 	return days[date.getDay()]
 }
 
+// Функция форматирования сообщения с расписанием
 const formatScheduleMessage = schedules => {
 	if (schedules.length === 0) {
 		return 'На этот день расписания нет.'
@@ -140,6 +155,28 @@ const formatScheduleMessage = schedules => {
 		.join('\n')
 }
 
+// Функция для создания календаря
+const createCalendar = (year, month) => {
+	const daysInMonth = new Date(year, month + 1, 0).getDate()
+	const firstDayOfMonth = new Date(year, month, 1).getDay()
+
+	let calendar = [['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']]
+
+	let week = new Array(7).fill('')
+	for (let i = 1; i <= daysInMonth; i++) {
+		const dayOfWeek = (firstDayOfMonth + i - 2) % 7
+		week[dayOfWeek] = i.toString()
+
+		if (dayOfWeek === 6 || i === daysInMonth) {
+			calendar.push(week)
+			week = new Array(7).fill('')
+		}
+	}
+
+	return calendar
+}
+
+// Обработчик команды /start
 bot.command('start', async ctx => {
 	await deleteAllPreviousMessages(ctx)
 	const userId = ctx.from.id
@@ -157,6 +194,7 @@ bot.command('start', async ctx => {
 	await ctx.reply('Добро пожаловать! Выберите действие:', mainMenu)
 })
 
+// Обработчик для просмотра профиля
 bot.hears(/👤 .+/, authMiddleware, async ctx => {
 	await deleteAllPreviousMessages(ctx)
 	const userData = ctx.state.user.userData
@@ -174,17 +212,20 @@ Email: ${userData.EMail}
 	)
 })
 
+// Обработчик для входа в систему
 bot.hears('🔐 Войти', async ctx => {
 	await deleteAllPreviousMessages(ctx)
 	await ctx.reply('Пожалуйста, введите ваш логин:')
 	ctx.session.state = 'awaitingLogin'
 })
 
+// Обработчик для меню расписания
 bot.hears('📅 Расписание', authMiddleware, async ctx => {
 	await deleteAllPreviousMessages(ctx)
 	await ctx.reply('Выберите опцию расписания:', createScheduleMenu)
 })
 
+// Обработчик для расписания на завтра
 bot.hears('Расписание на завтра', authMiddleware, async ctx => {
 	const token = ctx.state.user.token
 	const tomorrow = new Date()
@@ -204,6 +245,7 @@ bot.hears('Расписание на завтра', authMiddleware, async ctx =>
 	}
 })
 
+// Обработчик для расписания на текущую неделю
 bot.hears('Расписание на текущую неделю', authMiddleware, async ctx => {
 	const token = ctx.state.user.token
 	const schedule = await fetchSchedule(token)
@@ -214,11 +256,53 @@ bot.hears('Расписание на текущую неделю', authMiddlewar
 	}
 })
 
+// Обработчик для календаря
 bot.hears('Календарь', authMiddleware, async ctx => {
-	await ctx.reply('Пожалуйста, введите дату в формате ДД.ММ.ГГГГ:')
-	ctx.session.state = 'awaitingDate'
+	const now = new Date()
+	const year = now.getFullYear()
+	const month = now.getMonth()
+	const calendar = createCalendar(year, month)
+
+	const monthNames = [
+		'Январь',
+		'Февраль',
+		'Март',
+		'Апрель',
+		'Май',
+		'Июнь',
+		'Июль',
+		'Август',
+		'Сентябрь',
+		'Октябрь',
+		'Ноябрь',
+		'Декабрь',
+	]
+
+	const keyboard = calendar.map(week =>
+		week.map(day =>
+			day
+				? Markup.button.callback(day, `date:${year}-${month + 1}-${day}`)
+				: Markup.button.callback(' ', 'noop')
+		)
+	)
+
+	keyboard.unshift([
+		Markup.button.callback('<<', `month:${year}-${month - 1}`),
+		Markup.button.callback(monthNames[month], 'noop'),
+		Markup.button.callback('>>', `month:${year}-${month + 1}`),
+	])
+
+	keyboard.push([
+		Markup.button.callback('Вернуться в меню расписания', 'back_to_schedule'),
+	])
+
+	await ctx.reply(
+		'Выберите интересующую дату:',
+		Markup.inlineKeyboard(keyboard)
+	)
 })
 
+// Обработчик для возврата в главное меню
 bot.hears('Вернуться в главное меню', async ctx => {
 	const userId = ctx.from.id
 	const isAuthenticated = users.has(userId)
@@ -235,6 +319,7 @@ bot.hears('Вернуться в главное меню', async ctx => {
 	await ctx.reply('Главное меню:', mainMenu)
 })
 
+// Обработчик для просмотра социальных сетей
 bot.hears('🌐 Наши соц. сети', async ctx => {
 	await deleteAllPreviousMessages(ctx)
 	const userId = ctx.from.id
@@ -252,6 +337,7 @@ bot.hears('🌐 Наши соц. сети', async ctx => {
 	await ctx.reply('Наши социальные сети:', mainMenu)
 })
 
+// Обработчик для включения уведомлений
 bot.hears('🔔 Включить уведомления', async ctx => {
 	await deleteAllPreviousMessages(ctx)
 	const userId = ctx.from.id
@@ -269,6 +355,7 @@ bot.hears('🔔 Включить уведомления', async ctx => {
 	await ctx.reply('Уведомления включены', mainMenu)
 })
 
+// Обработчик для просмотра информации о боте
 bot.hears('ℹ️ Информация о боте', async ctx => {
 	await deleteAllPreviousMessages(ctx)
 	const userId = ctx.from.id
@@ -289,6 +376,82 @@ bot.hears('ℹ️ Информация о боте', async ctx => {
 	)
 })
 
+// Обработчик для callback-запросов (для работы с календарем)
+bot.on('callback_query', async ctx => {
+	const callbackData = ctx.callbackQuery.data
+
+	if (callbackData === 'noop') {
+		return await ctx.answerCbQuery()
+	}
+
+	if (callbackData === 'back_to_schedule') {
+		await ctx.answerCbQuery()
+		return await ctx.editMessageText(
+			'Выберите опцию расписания:',
+			createScheduleMenu
+		)
+	}
+
+	if (callbackData.startsWith('date:')) {
+		const [year, month, day] = callbackData.split(':')[1].split('-').map(Number)
+		const date = new Date(year, month - 1, day)
+		const formattedDate = date.toISOString().split('T')[0]
+
+		const schedule = scheduleCache.get(formattedDate)
+		if (schedule) {
+			await ctx.answerCbQuery()
+			await ctx.editMessageText(formatScheduleMessage([schedule]))
+		} else {
+			await ctx.answerCbQuery('На выбранную дату расписания нет.')
+		}
+		return
+	}
+
+	if (callbackData.startsWith('month:')) {
+		const [year, month] = callbackData.split(':')[1].split('-').map(Number)
+		const calendar = createCalendar(year, month)
+		const monthNames = [
+			'Январь',
+			'Февраль',
+			'Март',
+			'Апрель',
+			'Май',
+			'Июнь',
+			'Июль',
+			'Август',
+			'Сентябрь',
+			'Октябрь',
+			'Ноябрь',
+			'Декабрь',
+		]
+
+		const keyboard = calendar.map(week =>
+			week.map(day =>
+				day
+					? Markup.button.callback(day, `date:${year}-${month + 1}-${day}`)
+					: Markup.button.callback(' ', 'noop')
+			)
+		)
+
+		keyboard.unshift([
+			Markup.button.callback('<<', `month:${year}-${month - 1}`),
+			Markup.button.callback(monthNames[month], 'noop'),
+			Markup.button.callback('>>', `month:${year}-${month + 1}`),
+		])
+
+		keyboard.push([
+			Markup.button.callback('Вернуться в меню расписания', 'back_to_schedule'),
+		])
+
+		await ctx.answerCbQuery()
+		await ctx.editMessageText(
+			'Выберите интересующую дату:',
+			Markup.inlineKeyboard(keyboard)
+		)
+	}
+})
+
+// Обработчик текстовых сообщений
 bot.on('text', async ctx => {
 	await deleteAllPreviousMessages(ctx)
 
@@ -375,6 +538,7 @@ bot.on('text', async ctx => {
 	}
 })
 
+// Обработчик ошибок
 bot.catch((err, ctx) => {
 	console.error(`Ошибка для ${ctx.updateType}`, err)
 	const userId = ctx.from.id
@@ -395,7 +559,9 @@ bot.catch((err, ctx) => {
 	)
 })
 
+// Запуск бота
 bot.launch()
 
+// Корректное завершение работы бота
 process.once('SIGINT', () => bot.stop('SIGINT'))
 process.once('SIGTERM', () => bot.stop('SIGTERM'))
