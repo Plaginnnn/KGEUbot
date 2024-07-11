@@ -3,7 +3,7 @@ import axios from 'axios'
 import { Markup, Telegraf, session } from 'telegraf'
 
 // Токен бота
-const token = '7415179094:AAHyPLljfNicW5Kn_owAqbwmOhz5tnyn7wA'
+const token = ''
 const bot = new Telegraf(token)
 
 // Использование сессий для хранения состояния пользователя
