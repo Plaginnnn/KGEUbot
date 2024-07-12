@@ -21,20 +21,21 @@ const createMainMenu = (isAuthenticated, userName = '') => {
 		['ℹ️ Информация о боте'],
 	]
 
-	if (isAuthenticated) {
+	if (isAuthenticated) {	
 		buttons.unshift([`👤 ${userName}`, '📅 Расписание'])
+		buttons.splice(1, 0, ['📊 Баллы БРС', '📚 Зачетная книжка'])
 	} else {
 		buttons.unshift(['🔐 Войти'])
 	}
 
 	return Markup.keyboard(buttons).resize()
 }
-
 // Функция для создания меню расписания
 const createScheduleMenu = Markup.keyboard([
 	['Расписание на завтра'],
 	['Расписание на текущую неделю'],
 	['Календарь'],
+	['Export Google Calendar'],
 	['Вернуться в главное меню'],
 ]).resize()
 
@@ -74,7 +75,6 @@ const authMiddleware = (ctx, next) => {
 	}
 	ctx.reply('Пожалуйста, авторизуйтесь с помощью кнопки "🔐 Войти"')
 }
-
 // Функция для получения сокращенного имени
 const getShortName = (lastName, firstName, parentName) => {
 	return `${lastName} ${firstName[0]}.${parentName[0]}.`
@@ -103,12 +103,14 @@ const cacheAllSchedules = async token => {
 		if (schedule && schedule.schedules.length > 0) {
 			schedule.schedules.forEach(item => {
 				const date = new Date(item.date).toISOString().split('T')[0]
-				scheduleCache.set(date, item)
+				if (!scheduleCache.has(date)) {
+					scheduleCache.set(date, [])
+				}
+				scheduleCache.get(date).push(item)
 			})
 		}
 	}
 }
-
 // Функция форматирования даты
 const formatDate = dateString => {
 	const date = new Date(dateString)
@@ -137,20 +139,19 @@ const getDayOfWeek = dateString => {
 // Функция форматирования сообщения с расписанием
 const formatScheduleMessage = schedules => {
 	if (schedules.length === 0) {
-		return 'На этот день расписания нет.'
+		return 'На эту неделю расписания нет.'
 	}
 
 	return schedules
 		.map(item => {
 			const date = formatDate(item.date)
 			const dayOfWeek = getDayOfWeek(item.date)
-			return `Дата: ${date} (${dayOfWeek})
-Время: ${item.timeStart} - ${item.timeEnd}
-Предмет: ${item.discip.name}
-Тип: ${item.type.name}
-Аудитория: ${item.auiditory}
-Преподаватель: ${item.teacher.name}
--------------------`
+			return `
+			${date} (${dayOfWeek})
+		${item.type.name}${item.discip.name}
+ 		${item.auiditory} / ${item.timeStart.slice(0, 5)} - ${item.timeEnd.slice(0, 5)}
+ 		${item.teacher.name}
+---------------------------------------`
 		})
 		.join('\n')
 }
@@ -174,6 +175,57 @@ const createCalendar = (year, month) => {
 	}
 
 	return calendar
+}
+
+// Функция для получения данных БРС
+const fetchBRS = async (token, semester = null) => {
+	try {
+		const url = semester
+			? `https://iep.kgeu.ru/api/user/brs?semestr=${semester}`
+			: 'https://iep.kgeu.ru/api/user/brs'
+		const response = await axios.get(url, {
+			headers: { 'x-access-token': token },
+		})
+		return response.data.payload
+	} catch (error) {
+		console.error('Ошибка при получении данных БРС:', error)
+		return null
+	}
+}
+
+// Функция для получения данных зачетной книжки
+const fetchRecordBook = async (token, semester = null) => {
+	try {
+		const url = semester
+			? `https://iep.kgeu.ru/api/user/record?semestr=${semester}`
+			: 'https://iep.kgeu.ru/api/user/record'
+		const response = await axios.get(url, {
+			headers: { 'x-access-token': token },
+		})
+		return response.data.payload
+	} catch (error) {
+		console.error('Ошибка при получении данных зачетной книжки:', error)
+		return null
+	}
+}
+//Функция для определения количества семестров и создания клавиатуры выбора семестра
+const getAvailableSemesters = async token => {
+	let semesters = []
+	for (let i = 1; ; i++) {
+		const data = await fetchBRS(token, i)
+		if (data && data.brs.length > 0) {
+			semesters.push(i)
+		} else {
+			break
+		}
+	}
+	return semesters
+}
+
+const createSemesterKeyboard = semesters => {
+	const keyboard = semesters.map(semester => [`Семестр ${semester}`])
+	keyboard.push(['Вернуться в главное меню'])
+	return Markup.keyboard(keyboard).resize()
 }
 
 // Обработчик команды /start
@@ -237,14 +289,13 @@ bot.hears('Расписание на завтра', authMiddleware, async ctx =>
 		await cacheAllSchedules(token)
 	}
 
-	const schedule = scheduleCache.get(tomorrowStr)
-	if (schedule) {
-		await ctx.reply(formatScheduleMessage([schedule]))
+	const schedules = scheduleCache.get(tomorrowStr)
+	if (schedules && schedules.length > 0) {
+		await ctx.reply(formatScheduleMessage(schedules))
 	} else {
 		await ctx.reply('На завтра расписания нет.')
 	}
 })
-
 // Обработчик для расписания на текущую неделю
 bot.hears('Расписание на текущую неделю', authMiddleware, async ctx => {
 	const token = ctx.state.user.token
@@ -254,6 +305,98 @@ bot.hears('Расписание на текущую неделю', authMiddlewar
 	} else {
 		await ctx.reply('Не удалось получить расписание на текущую неделю.')
 	}
+})
+
+// Обработчик для балов БРС
+bot.hears('📊 Баллы БРС', authMiddleware, async ctx => {
+	await ctx.reply(
+		'Выберите опцию:',
+		Markup.keyboard([
+			['Баллы текущего семестра'],
+			['Выбрать семестр БРС'],
+			['Вернуться в главное меню'],
+		]).resize()
+	)
+})
+
+// Обработчик для зачетной книжки
+bot.hears('📚 Зачетная книжка', authMiddleware, async ctx => {
+	await ctx.reply(
+		'Выберите опцию:',
+		Markup.keyboard([
+			['Зачетная книжка текущего семестра'],
+			['Выбрать семестр зачетной книжки'],
+			['Вернуться в главное меню'],
+		]).resize()
+	)
+})
+
+//Обработчик для отображения балов текущего семестра
+bot.hears('Баллы текущего семестра', authMiddleware, async ctx => {
+	const userId = ctx.from.id
+	const user = users.get(userId)
+	if (!user || !user.token) {
+		await ctx.reply('Пожалуйста, авторизуйтесь снова.')
+		return
+	}
+	const brsData = await fetchBRS(user.token)
+	if (brsData) {
+		let message = 'Баллы текущего семестра:\n\n'
+		brsData.brs.forEach(subject => {
+			const totalPoints =
+				subject.points.reduce((sum, point) => sum + point.point, 0) +
+				subject.addPoints.reduce((sum, point) => sum + point, 0)
+			message += `${subject.discip}: ${totalPoints} баллов\n`
+		})
+		await ctx.reply(message)
+	} else {
+		await ctx.reply('Не удалось получить данные БРС.')
+	}
+})
+
+//Обработчик для отображения ведомостей текущего семестра
+bot.hears('Зачетная книжка текущего семестра', authMiddleware, async ctx => {
+	const userId = ctx.from.id
+	const user = users.get(userId)
+	if (!user || !user.token) {
+		await ctx.reply('Пожалуйста, авторизуйтесь снова.')
+		return
+	}
+	const recordData = await fetchRecordBook(user.token)
+	if (recordData) {
+		let message = `Зачетная книжка (семестр ${recordData.semestr}):\n\n`
+		recordData.record.forEach(subject => {
+			message += `${subject.discip}: ${subject.mark} баллов, ${subject.result}\n`
+		})
+		await ctx.reply(message)
+	} else {
+		await ctx.reply('Не удалось получить данные зачетной книжки.')
+	}
+})
+
+//Обработчики для выбора семестра
+bot.hears('Выбрать семестр БРС', authMiddleware, async ctx => {
+	const userId = ctx.from.id
+	const user = users.get(userId)
+	if (!user || !user.token) {
+		await ctx.reply('Пожалуйста, авторизуйтесь снова.')
+		return
+	}
+	const semesters = await getAvailableSemesters(user.token)
+	await ctx.reply('Выберите семестр:', createSemesterKeyboard(semesters))
+	ctx.session.state = 'awaitingBRSSemester'
+})
+
+bot.hears('Выбрать семестр зачетной книжки', authMiddleware, async ctx => {
+	const userId = ctx.from.id
+	const user = users.get(userId)
+	if (!user || !user.token) {
+		await ctx.reply('Пожалуйста, авторизуйтесь снова.')
+		return
+	}
+	const semesters = await getAvailableSemesters(user.token)
+	await ctx.reply('Выберите семестр:', createSemesterKeyboard(semesters))
+	ctx.session.state = 'awaitingRecordSemester'
 })
 
 // Обработчик для календаря
@@ -290,10 +433,6 @@ bot.hears('Календарь', authMiddleware, async ctx => {
 		Markup.button.callback('<<', `month:${year}-${month - 1}`),
 		Markup.button.callback(monthNames[month], 'noop'),
 		Markup.button.callback('>>', `month:${year}-${month + 1}`),
-	])
-
-	keyboard.push([
-		Markup.button.callback('Вернуться в меню расписания', 'back_to_schedule'),
 	])
 
 	await ctx.reply(
@@ -334,7 +473,14 @@ bot.hears('🌐 Наши соц. сети', async ctx => {
 			  )
 			: ''
 	)
-	await ctx.reply('Наши социальные сети:', mainMenu)
+	await ctx.reply(
+		`Официальный сайт КГЭУ: https://www.kgeu.ru/ 🌐
+		Образовательная платформа КГЭУ: https://e.kgeu.ru/ 🌐
+		ВКонтакте: https://vk.com/plaginnnn 🌐
+		Telegram: @Plaginnnnn 🌐
+`,
+		mainMenu
+	)
 })
 
 // Обработчик для включения уведомлений
@@ -371,7 +517,15 @@ bot.hears('ℹ️ Информация о боте', async ctx => {
 			: ''
 	)
 	await ctx.reply(
-		'Этот бот предназначен для получения информации о расписании КГЭУ.',
+		`Информация о боте
+Основные возможности бота:
+Авторизация пользователей
+Пользователи могут авторизоваться в боте, введя свой логин и пароль, такие же как на сайте https://e.kgeu.ru/ 🔐
+После успешной авторизации, данные пользователя (имя, фамилия, отчество, email, должность) отображаются в профиле. 👤
+Пользователи могут включать/выключать уведомления о важных событиях. 🔔
+Бот использует безопасное хранение данных пользователей, привязанных к их идентификаторам в Telegram. Однако, на данный момент реализация постоянного хранения данных в базе данных еще не завершена, поэтому сессия пользователя может сбрасываться при перезапуске бота. 💾
+Надеемся, что этот бот будет полезен для студентов и сотрудников КГЭУ в авторизации и получении доступа к информации об университете. 🎓
+`,
 		mainMenu
 	)
 })
@@ -397,10 +551,21 @@ bot.on('callback_query', async ctx => {
 		const date = new Date(year, month - 1, day)
 		const formattedDate = date.toISOString().split('T')[0]
 
-		const schedule = scheduleCache.get(formattedDate)
-		if (schedule) {
+		const schedules = scheduleCache.get(formattedDate)
+		if (schedules && schedules.length > 0) {
 			await ctx.answerCbQuery()
-			await ctx.editMessageText(formatScheduleMessage([schedule]))
+			await ctx.editMessageText(formatScheduleMessage(schedules), {
+				reply_markup: {
+					inline_keyboard: [
+						[
+							{
+								text: 'Вернуться к календарю',
+								callback_data: `month:${year}-${month - 1}`,
+							},
+						],
+					],
+				},
+			})
 		} else {
 			await ctx.answerCbQuery('На выбранную дату расписания нет.')
 		}
@@ -439,10 +604,6 @@ bot.on('callback_query', async ctx => {
 			Markup.button.callback('>>', `month:${year}-${month + 1}`),
 		])
 
-		keyboard.push([
-			Markup.button.callback('Вернуться в меню расписания', 'back_to_schedule'),
-		])
-
 		await ctx.answerCbQuery()
 		await ctx.editMessageText(
 			'Выберите интересующую дату:',
@@ -451,17 +612,142 @@ bot.on('callback_query', async ctx => {
 	}
 })
 
+//Функция для преобразования расписания в формат CSV
+const convertScheduleToCSV = schedules => {
+	let csvContent =
+		'Subject,Start Date,Start Time,End Date,End Time,Location,Description\n'
+	schedules.forEach(item => {
+		const date = new Date(item.date).toISOString().split('T')[0]
+		csvContent += `"${item.discip.name} (${item.type.name})",${date},${item.timeStart},${date},${item.timeEnd},${item.auiditory},"${item.teacher.name}"\n`
+	})
+	return csvContent
+}
+
+//Обработчик для экспорта расписания для гугл календаря
+bot.hears('Export Google Calendar', authMiddleware, async ctx => {
+	const allSchedules = Array.from(scheduleCache.values()).flat()
+	const csvContent = convertScheduleToCSV(allSchedules)
+
+	// Создаем буфер из CSV-контента
+	const buffer = Buffer.from(csvContent, 'utf8')
+
+	// Отправляем файл пользователю
+	await ctx.replyWithDocument(
+		{
+			source: buffer,
+			filename: 'schedule.csv',
+		},
+		{
+			caption: 'Вот ваше расписание в формате CSV для Google Calendar.',
+		}
+	)
+})
 // Обработчик текстовых сообщений
 bot.on('text', async ctx => {
 	await deleteAllPreviousMessages(ctx)
 
 	const userId = ctx.from.id
+	if (ctx.message.text.startsWith('Семестр ')) {
+		const semester = parseInt(ctx.message.text.split(' ')[1])
+		const userId = ctx.from.id
+		const user = users.get(userId)
+
+		if (!user || !user.token) {
+			await ctx.reply('Пожалуйста, авторизуйтесь снова.')
+			return
+		}
+
+		if (ctx.session.state === 'awaitingBRSSemester') {
+			const brsData = await fetchBRS(user.token, semester)
+			if (brsData && brsData.brs) {
+				let message = `Баллы за ${semester} семестр:\n\n`
+				brsData.brs.forEach(subject => {
+					const totalPoints =
+						subject.points.reduce((sum, point) => sum + point.point, 0) +
+						subject.addPoints.reduce((sum, point) => sum + point, 0)
+					message += `${subject.discip}: ${totalPoints} баллов\n`
+				})
+				await ctx.reply(message)
+			} else {
+				await ctx.reply(
+					'Не удалось получить данные БРС для выбранного семестра.'
+				)
+			}
+		} else if (ctx.session.state === 'awaitingRecordSemester') {
+			const recordData = await fetchRecordBook(user.token, semester)
+			if (recordData && recordData.record) {
+				let message = `Зачетная книжка (семестр ${semester}):\n\n`
+				recordData.record.forEach(subject => {
+					message += `${subject.discip}: ${subject.mark} баллов, ${subject.result}\n`
+				})
+				await ctx.reply(message)
+			} else {
+				await ctx.reply(
+					'Не удалось получить данные зачетной книжки для выбранного семестра.'
+				)
+			}
+		}
+
+		// Возврат к главному меню после отображения данных
+		const mainMenu = createMainMenu(
+			true,
+			getShortName(
+				user.userData.LastName,
+				user.userData.FirstName,
+				user.userData.ParentName
+			)
+		)
+		await ctx.reply('Выберите дальнейшее действие:', mainMenu)
+
+		delete ctx.session.state
+		return
+	}
 
 	switch (ctx.session.state) {
 		case 'awaitingLogin':
 			ctx.session.login = ctx.message.text
 			await ctx.reply('Теперь введите ваш пароль:')
 			ctx.session.state = 'awaitingPassword'
+			break
+		case 'awaitingBRSSemester':
+			if (ctx.message.text.startsWith('Семестр ')) {
+				const semester = parseInt(ctx.message.text.split(' ')[1])
+				const brsData = await fetchBRS(ctx.state.user.token, semester)
+				if (brsData) {
+					let message = `Баллы за ${semester} семестр:\n\n`
+					brsData.brs.forEach(subject => {
+						const totalPoints =
+							subject.points.reduce((sum, point) => sum + point.point, 0) +
+							subject.addPoints.reduce((sum, point) => sum + point, 0)
+						message += `${subject.discip}: ${totalPoints} баллов\n`
+					})
+					await ctx.reply(message)
+				} else {
+					await ctx.reply(
+						'Не удалось получить данные БРС для выбранного семестра.'
+					)
+				}
+			}
+			delete ctx.session.state
+			break
+
+		case 'awaitingRecordSemester':
+			if (ctx.message.text.startsWith('Семестр ')) {
+				const semester = parseInt(ctx.message.text.split(' ')[1])
+				const recordData = await fetchRecordBook(ctx.state.user.token, semester)
+				if (recordData) {
+					let message = `Зачетная книжка (семестр ${semester}):\n\n`
+					recordData.record.forEach(subject => {
+						message += `${subject.discip}: ${subject.mark} баллов, ${subject.result}\n`
+					})
+					await ctx.reply(message)
+				} else {
+					await ctx.reply(
+						'Не удалось получить данные зачетной книжки для выбранного семестра.'
+					)
+				}
+			}
+			delete ctx.session.state
 			break
 		case 'awaitingPassword':
 			const { login } = ctx.session
@@ -552,10 +838,6 @@ bot.catch((err, ctx) => {
 					users.get(userId).userData.ParentName
 			  )
 			: ''
-	)
-	ctx.reply(
-		'Произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте позже.',
-		mainMenu
 	)
 })
 
