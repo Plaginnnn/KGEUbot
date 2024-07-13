@@ -3,8 +3,11 @@ import axios from 'axios'
 import { Markup, Telegraf, session } from 'telegraf'
 
 // Токен бота
-const token = ''
+const token = '7415179094:AAHyPLljfNicW5Kn_owAqbwmOhz5tnyn7wA'
 const bot = new Telegraf(token)
+
+const FIRST_WEEK_NUMBER = 2 // Начало отсчета со второй недели
+const SCHEDULE_START_DATE = new Date('2024-02-05')
 
 // Использование сессий для хранения состояния пользователя
 bot.use(session())
@@ -21,7 +24,7 @@ const createMainMenu = (isAuthenticated, userName = '') => {
 		['ℹ️ Информация о боте'],
 	]
 
-	if (isAuthenticated) {	
+	if (isAuthenticated) {
 		buttons.unshift([`👤 ${userName}`, '📅 Расписание'])
 		buttons.splice(1, 0, ['📊 Баллы БРС', '📚 Зачетная книжка'])
 	} else {
@@ -95,6 +98,21 @@ const fetchSchedule = async (token, week) => {
 		return null
 	}
 }
+// Функция для получения расписания на конкретную неделю
+const fetchScheduleForWeek = async (token, week) => {
+	try {
+		const response = await axios.get(
+			`https://iep.kgeu.ru/api/schedule?week=${week}`,
+			{
+				headers: { 'x-access-token': token },
+			}
+		)
+		return response.data.payload.schedules
+	} catch (error) {
+		console.error('Ошибка при получении расписания:', error)
+		return null
+	}
+}
 
 // Функция для кэширования всех расписаний
 const cacheAllSchedules = async token => {
@@ -111,6 +129,15 @@ const cacheAllSchedules = async token => {
 		}
 	}
 }
+// Функция для получения расписания на конкретную дату
+const getScheduleForDate = async (token, date) => {
+	const weekNumber = getWeekNumber(date)
+	const schedule = await fetchScheduleForWeek(token, weekNumber)
+	if (!schedule) return null
+
+	const dateString = date.toISOString().split('T')[0]
+	return schedule.filter(item => item.date.startsWith(dateString))
+}
 // Функция форматирования даты
 const formatDate = dateString => {
 	const date = new Date(dateString)
@@ -119,6 +146,13 @@ const formatDate = dateString => {
 		month: '2-digit',
 		year: 'numeric',
 	})
+}
+
+// Функция для получения номера недели по дате
+const getWeekNumber = date => {
+	const diff = date.getTime() - SCHEDULE_START_DATE.getTime()
+	const oneWeek = 7 * 24 * 60 * 60 * 1000
+	return Math.floor(diff / oneWeek) + FIRST_WEEK_NUMBER
 }
 
 // Функция получения дня недели
@@ -282,14 +316,8 @@ bot.hears('Расписание на завтра', authMiddleware, async ctx =>
 	const token = ctx.state.user.token
 	const tomorrow = new Date()
 	tomorrow.setDate(tomorrow.getDate() + 1)
-	const tomorrowStr = tomorrow.toISOString().split('T')[0]
 
-	if (scheduleCache.size === 0) {
-		await ctx.reply('Загрузка данных расписания...')
-		await cacheAllSchedules(token)
-	}
-
-	const schedules = scheduleCache.get(tomorrowStr)
+	const schedules = await getScheduleForDate(token, tomorrow)
 	if (schedules && schedules.length > 0) {
 		await ctx.reply(formatScheduleMessage(schedules))
 	} else {
@@ -299,14 +327,26 @@ bot.hears('Расписание на завтра', authMiddleware, async ctx =>
 // Обработчик для расписания на текущую неделю
 bot.hears('Расписание на текущую неделю', authMiddleware, async ctx => {
 	const token = ctx.state.user.token
-	const schedule = await fetchSchedule(token)
-	if (schedule) {
-		await ctx.reply(formatScheduleMessage(schedule.schedules))
+	const today = new Date()
+	const weekStart = new Date(
+		today.setDate(today.getDate() - today.getDay() + 1)
+	)
+	const weekEnd = new Date(today.setDate(today.getDate() - today.getDay() + 7))
+
+	let weekSchedule = []
+	for (let d = weekStart; d <= weekEnd; d.setDate(d.getDate() + 1)) {
+		const daySchedule = await getScheduleForDate(token, new Date(d))
+		if (daySchedule) {
+			weekSchedule = weekSchedule.concat(daySchedule)
+		}
+	}
+
+	if (weekSchedule.length > 0) {
+		await ctx.reply(formatScheduleMessage(weekSchedule))
 	} else {
-		await ctx.reply('Не удалось получить расписание на текущую неделю.')
+		await ctx.reply('На текущую неделю расписания нет.')
 	}
 })
-
 // Обработчик для балов БРС
 bot.hears('📊 Баллы БРС', authMiddleware, async ctx => {
 	await ctx.reply(
@@ -531,7 +571,21 @@ bot.hears('ℹ️ Информация о боте', async ctx => {
 })
 
 // Обработчик для callback-запросов (для работы с календарем)
+// Обработчик для callback-запросов (для работы с календарем)
 bot.on('callback_query', async ctx => {
+	const userId = ctx.from.id
+	let token
+
+	// Проверка авторизации
+	if (users.has(userId)) {
+		token = users.get(userId).token
+	} else {
+		await ctx.answerCbQuery(
+			'Пожалуйста, авторизуйтесь для доступа к этой функции.'
+		)
+		return
+	}
+
 	const callbackData = ctx.callbackQuery.data
 
 	if (callbackData === 'noop') {
@@ -549,9 +603,9 @@ bot.on('callback_query', async ctx => {
 	if (callbackData.startsWith('date:')) {
 		const [year, month, day] = callbackData.split(':')[1].split('-').map(Number)
 		const date = new Date(year, month - 1, day)
-		const formattedDate = date.toISOString().split('T')[0]
 
-		const schedules = scheduleCache.get(formattedDate)
+		const schedules = await getScheduleForDate(token, date)
+
 		if (schedules && schedules.length > 0) {
 			await ctx.answerCbQuery()
 			await ctx.editMessageText(formatScheduleMessage(schedules), {
@@ -569,7 +623,6 @@ bot.on('callback_query', async ctx => {
 		} else {
 			await ctx.answerCbQuery('На выбранную дату расписания нет.')
 		}
-		return
 	}
 
 	if (callbackData.startsWith('month:')) {
@@ -612,34 +665,33 @@ bot.on('callback_query', async ctx => {
 	}
 })
 
-//Функция для преобразования расписания в формат CSV
-const convertScheduleToCSV = schedules => {
+const exportScheduleToCSV = async token => {
+	let allSchedules = []
+	for (let week = FIRST_WEEK_NUMBER; week <= 30; week++) {
+		const weekSchedule = await fetchScheduleForWeek(token, week)
+		if (weekSchedule) {
+			allSchedules = allSchedules.concat(weekSchedule)
+		}
+	}
+
 	let csvContent =
 		'Subject,Start Date,Start Time,End Date,End Time,Location,Description\n'
-	schedules.forEach(item => {
+	allSchedules.forEach(item => {
 		const date = new Date(item.date).toISOString().split('T')[0]
 		csvContent += `"${item.discip.name} (${item.type.name})",${date},${item.timeStart},${date},${item.timeEnd},${item.auiditory},"${item.teacher.name}"\n`
 	})
-	return csvContent
+
+	return Buffer.from(csvContent, 'utf8')
 }
 
 //Обработчик для экспорта расписания для гугл календаря
 bot.hears('Export Google Calendar', authMiddleware, async ctx => {
-	const allSchedules = Array.from(scheduleCache.values()).flat()
-	const csvContent = convertScheduleToCSV(allSchedules)
+	const token = ctx.state.user.token
+	const csvBuffer = await exportScheduleToCSV(token)
 
-	// Создаем буфер из CSV-контента
-	const buffer = Buffer.from(csvContent, 'utf8')
-
-	// Отправляем файл пользователю
 	await ctx.replyWithDocument(
-		{
-			source: buffer,
-			filename: 'schedule.csv',
-		},
-		{
-			caption: 'Вот ваше расписание в формате CSV для Google Calendar.',
-		}
+		{ source: csvBuffer, filename: 'schedule.csv' },
+		{ caption: 'Вот ваше расписание в формате CSV для Google Calendar.' }
 	)
 })
 // Обработчик текстовых сообщений
