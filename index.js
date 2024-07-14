@@ -1,5 +1,6 @@
 // Импорт необходимых модулей
 import axios from 'axios'
+import schedule from 'node-schedule'
 import { Markup, Telegraf, session } from 'telegraf'
 
 // Токен бота
@@ -35,9 +36,10 @@ const createMainMenu = (isAuthenticated, userName = '') => {
 }
 // Функция для создания меню расписания
 const createScheduleMenu = Markup.keyboard([
+	['Расписание на сегодня'],
 	['Расписание на завтра'],
 	['Расписание на текущую неделю'],
-	['Календарь'],
+	['Выбрать по дате'],
 	['Export Google Calendar'],
 	['Вернуться в главное меню'],
 ]).resize()
@@ -135,6 +137,7 @@ const getScheduleForDate = async (token, date) => {
 	const schedule = await fetchScheduleForWeek(token, weekNumber)
 	if (!schedule) return null
 
+	// Используем toISOString и split для получения даты в формате YYYY-MM-DD
 	const dateString = date.toISOString().split('T')[0]
 	return schedule.filter(item => item.date.startsWith(dateString))
 }
@@ -262,6 +265,24 @@ const createSemesterKeyboard = semesters => {
 	return Markup.keyboard(keyboard).resize()
 }
 
+//Функция для отправки ежедневных уведомлений
+const sendDailyNotification = async () => {
+	const now = new Date()
+	for (const [userId, user] of users.entries()) {
+		if (user.notificationsEnabled) {
+			const schedules = await getScheduleForDate(user.token, now)
+			if (schedules && schedules.length > 0) {
+				await bot.telegram.sendMessage(
+					userId,
+					`Расписание на сегодня:\n\n${formatScheduleMessage(schedules)}`
+				)
+			}
+		}
+	}
+}
+
+schedule.scheduleJob('0 6 * * *', sendDailyNotification) //Время для отправки уведомлений пользователю в 6 утра
+
 // Обработчик команды /start
 bot.command('start', async ctx => {
 	await deleteAllPreviousMessages(ctx)
@@ -277,7 +298,19 @@ bot.command('start', async ctx => {
 			  )
 			: ''
 	)
-	await ctx.reply('Добро пожаловать! Выберите действие:', mainMenu)
+
+	const welcomeMessage = `
+Добро пожаловать! Вас приветствует виртуальный помощник KGEUInfoBot.
+С моей помощью Вы сможете:
+
+📚 Смотреть информацию о ведомостях учёбы
+🗓️ Просматривать расписание занятий
+🔔 Получать уведомления о расписании
+🔐 Авторизоваться в системе с использованием логина и пароля от сайта https://e.kgeu.ru/
+
+Надеемся, что этот бот будет полезен для студентов в получении необходимой информации 🎓
+`
+	await ctx.reply(welcomeMessage, mainMenu)
 })
 
 // Обработчик для просмотра профиля
@@ -322,6 +355,19 @@ bot.hears('Расписание на завтра', authMiddleware, async ctx =>
 		await ctx.reply(formatScheduleMessage(schedules))
 	} else {
 		await ctx.reply('На завтра расписания нет.')
+	}
+})
+
+// Обработчик для расписания на сегодня
+bot.hears('Расписание на сегодня', authMiddleware, async ctx => {
+	const token = ctx.state.user.token
+	const today = new Date()
+
+	const schedules = await getScheduleForDate(token, today)
+	if (schedules && schedules.length > 0) {
+		await ctx.reply(formatScheduleMessage(schedules))
+	} else {
+		await ctx.reply('На сегодня расписания нет.')
 	}
 })
 // Обработчик для расписания на текущую неделю
@@ -440,7 +486,7 @@ bot.hears('Выбрать семестр зачетной книжки', authMid
 })
 
 // Обработчик для календаря
-bot.hears('Календарь', authMiddleware, async ctx => {
+bot.hears('Выбрать по дате', authMiddleware, async ctx => {
 	const now = new Date()
 	const year = now.getFullYear()
 	const month = now.getMonth()
@@ -525,20 +571,27 @@ bot.hears('🌐 Наши соц. сети', async ctx => {
 
 // Обработчик для включения уведомлений
 bot.hears('🔔 Включить уведомления', async ctx => {
-	await deleteAllPreviousMessages(ctx)
 	const userId = ctx.from.id
-	const isAuthenticated = users.has(userId)
-	const mainMenu = createMainMenu(
-		isAuthenticated,
-		isAuthenticated
-			? getShortName(
-					users.get(userId).userData.LastName,
-					users.get(userId).userData.FirstName,
-					users.get(userId).userData.ParentName
-			  )
-			: ''
-	)
-	await ctx.reply('Уведомления включены', mainMenu)
+	if (users.has(userId)) {
+		const user = users.get(userId)
+		user.notificationsEnabled = !user.notificationsEnabled
+		users.set(userId, user)
+		await ctx.reply(
+			user.notificationsEnabled
+				? 'Уведомления включены'
+				: 'Уведомления выключены',
+			createMainMenu(
+				true,
+				getShortName(
+					user.userData.LastName,
+					user.userData.FirstName,
+					user.userData.ParentName
+				)
+			)
+		)
+	} else {
+		await ctx.reply('Пожалуйста, авторизуйтесь для управления уведомлениями.')
+	}
 })
 
 // Обработчик для просмотра информации о боте
@@ -812,7 +865,12 @@ bot.on('text', async ctx => {
 
 				if (response.data.type === 'success') {
 					const { token, userData } = response.data.payload
-					users.set(userId, { login, token, userData })
+					users.set(userId, {
+						login,
+						token,
+						userData,
+						notificationsEnabled: false,
+					})
 					const shortName = getShortName(
 						userData.LastName,
 						userData.FirstName,
