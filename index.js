@@ -283,35 +283,41 @@ const sendDailyNotification = async () => {
 
 schedule.scheduleJob('0 6 * * *', sendDailyNotification) //Время для отправки уведомлений пользователю в 6 утра
 
+let isStartCommandRunning = false
 // Обработчик команды /start
 bot.command('start', async ctx => {
-	await deleteAllPreviousMessages(ctx)
-	const userId = ctx.from.id
-	const isAuthenticated = users.has(userId)
-	const mainMenu = createMainMenu(
-		isAuthenticated,
-		isAuthenticated
-			? getShortName(
-					users.get(userId).userData.LastName,
-					users.get(userId).userData.FirstName,
-					users.get(userId).userData.ParentName
-			  )
-			: ''
-	)
-	await ctx.reply(
-		`
-Добро пожаловать! Вас приветствует виртуальный помощник KGEUInfoBot.
-С моей помощью Вы сможете:
+	if (isStartCommandRunning) return // Предотвращаем повторный запуск
+	isStartCommandRunning = true
 
-📚 Смотреть информацию о ведомостях учёбы
-🗓️ Просматривать расписание занятий
-🔔 Получать уведомления о расписании
-🔐 Авторизоваться в системе с использованием логина и пароля от сайта https://e.kgeu.ru/
-
-Надеемся, что этот бот будет полезен для студентов в получении необходимой информации 🎓
-`,
-		mainMenu
-	)
+	try {
+		await deleteAllPreviousMessages(ctx)
+		const userId = ctx.from.id
+		const isAuthenticated = users.has(userId)
+		const mainMenu = createMainMenu(
+			isAuthenticated,
+			isAuthenticated
+				? getShortName(
+						users.get(userId).userData.LastName,
+						users.get(userId).userData.FirstName,
+						users.get(userId).userData.ParentName
+				  )
+				: ''
+		)
+		await ctx.reply(
+			`Добро пожаловать! Вас приветствует виртуальный помощник KGEUInfoBot.
+					С моей помощью Вы сможете:
+					
+					📚 Смотреть информацию о ведомостях учёбы
+					🗓️ Просматривать расписание занятий
+					🔔 Получать уведомления о расписании
+					🔐 Авторизоваться в системе с использованием логина и пароля от сайта https://e.kgeu.ru/
+					
+					Надеемся, что этот бот будет полезен для студентов в получении необходимой информации 🎓`,
+			mainMenu
+		)
+	} finally {
+		isStartCommandRunning = false
+	}
 })
 
 // Обработчик для просмотра профиля
