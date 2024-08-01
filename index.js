@@ -137,7 +137,6 @@ const getScheduleForDate = async (token, date) => {
 	const schedule = await fetchScheduleForWeek(token, weekNumber)
 	if (!schedule) return null
 
-	// Используем toISOString и split для получения даты в формате YYYY-MM-DD
 	const dateString = date.toISOString().split('T')[0]
 	return schedule.filter(item => item.date.startsWith(dateString))
 }
@@ -267,21 +266,24 @@ const createSemesterKeyboard = semesters => {
 
 //Функция для отправки ежедневных уведомлений
 const sendDailyNotification = async () => {
-	const now = new Date()
+	const tomorrow = new Date()
+	tomorrow.setDate(tomorrow.getDate() + 1)
+
 	for (const [userId, user] of users.entries()) {
 		if (user.notificationsEnabled) {
-			const schedules = await getScheduleForDate(user.token, now)
+			const schedules = await getScheduleForDate(user.token, tomorrow)
 			if (schedules && schedules.length > 0) {
 				await bot.telegram.sendMessage(
 					userId,
-					`Расписание на сегодня:\n\n${formatScheduleMessage(schedules)}`
+					`Расписание на завтра:\n\n${formatScheduleMessage(schedules)}`
 				)
+			} else {
+				await bot.telegram.sendMessage(userId, 'На завтра расписания нет.')
 			}
 		}
 	}
 }
-
-schedule.scheduleJob('0 6 * * *', sendDailyNotification) //Время для отправки уведомлений пользователю в 6 утра
+schedule.scheduleJob('0 18 * * *', sendDailyNotification) // Отправка уведомлений пользователю в 18:00
 
 let isStartCommandRunning = false
 // Обработчик команды /start
@@ -585,7 +587,7 @@ bot.hears('🔔 Включить уведомления', async ctx => {
 		users.set(userId, user)
 		await ctx.reply(
 			user.notificationsEnabled
-				? 'Уведомления включены'
+				? 'Уведомления включены. Вы будете получать расписание на следующий день каждый вечер в 18:00.'
 				: 'Уведомления выключены',
 			createMainMenu(
 				true,
