@@ -34,12 +34,11 @@ const createMainMenu = (isAuthenticated, userName = '') => {
 
 	return Markup.keyboard(buttons).resize()
 }
+
 // Функция для создания меню расписания
 const createScheduleMenu = Markup.keyboard([
-	['Расписание на сегодня'],
-	['Расписание на завтра'],
-	['Расписание на текущую неделю'],
-	['Выбрать по дате'],
+	['Расписание на сегодня', 'Расписание на завтра'],
+	['Расписание на текущую неделю', 'Выбрать по дате'],
 	['Export Google Calendar'],
 	['Вернуться в главное меню'],
 ]).resize()
@@ -308,12 +307,12 @@ bot.command('start', async ctx => {
 		await ctx.reply(
 			`Добро пожаловать! Вас приветствует виртуальный помощник KGEUInfoBot.
 					С моей помощью Вы сможете:
-					
+
 					📚 Смотреть информацию о ведомостях учёбы
 					🗓️ Просматривать расписание занятий
 					🔔 Получать уведомления о расписании
 					🔐 Авторизоваться в системе с использованием логина и пароля от сайта https://e.kgeu.ru/
-					
+
 					Надеемся, что этот бот будет полезен для студентов в получении необходимой информации 🎓`,
 			mainMenu
 		)
@@ -467,7 +466,7 @@ bot.hears('Зачетная книжка текущего семестра', aut
 	}
 })
 
-//Обработчики для выбора семестра
+//Обработчики для выбора семестра БРС
 bot.hears('Выбрать семестр БРС', authMiddleware, async ctx => {
 	const userId = ctx.from.id
 	const user = users.get(userId)
@@ -480,6 +479,7 @@ bot.hears('Выбрать семестр БРС', authMiddleware, async ctx => {
 	ctx.session.state = 'awaitingBRSSemester'
 })
 
+//Обработчик для выбора семестра зачетной книжки
 bot.hears('Выбрать семестр зачетной книжки', authMiddleware, async ctx => {
 	const userId = ctx.from.id
 	const user = users.get(userId)
@@ -631,7 +631,6 @@ bot.hears('ℹ️ Информация о боте', async ctx => {
 })
 
 // Обработчик для callback-запросов (для работы с календарем)
-// Обработчик для callback-запросов (для работы с календарем)
 bot.on('callback_query', async ctx => {
 	const userId = ctx.from.id
 	let token
@@ -725,10 +724,20 @@ bot.on('callback_query', async ctx => {
 	}
 })
 
+//Обработчик для экспорта расписания для гугл календаря
+bot.hears('Export Google Calendar', authMiddleware, async ctx => {
+	const token = ctx.state.user.token
+	const csvBuffer = await exportScheduleToCSV(token)
+
+	await ctx.replyWithDocument(
+		{ source: csvBuffer, filename: 'schedule.csv' },
+		{ caption: 'Вот ваше расписание в формате CSV для Google Calendar.' }
+	)
+})
 const exportScheduleToCSV = async token => {
 	let allSchedules = []
 	for (let week = FIRST_WEEK_NUMBER; week <= 30; week++) {
-		const weekSchedule = await fetchScheduleForWeek(token, week)
+		const weekSchedule = await (token, week)
 		if (weekSchedule) {
 			allSchedules = allSchedules.concat(weekSchedule)
 		}
@@ -744,16 +753,6 @@ const exportScheduleToCSV = async token => {
 	return Buffer.from(csvContent, 'utf8')
 }
 
-//Обработчик для экспорта расписания для гугл календаря
-bot.hears('Export Google Calendar', authMiddleware, async ctx => {
-	const token = ctx.state.user.token
-	const csvBuffer = await exportScheduleToCSV(token)
-
-	await ctx.replyWithDocument(
-		{ source: csvBuffer, filename: 'schedule.csv' },
-		{ caption: 'Вот ваше расписание в формате CSV для Google Calendar.' }
-	)
-})
 // Обработчик текстовых сообщений
 bot.on('text', async ctx => {
 	await deleteAllPreviousMessages(ctx)
@@ -819,7 +818,9 @@ bot.on('text', async ctx => {
 		case 'awaitingLogin':
 			ctx.session.login = ctx.message.text
 			await ctx.reply('Теперь введите ваш пароль:')
+			await deleteAllPreviousMessages(ctx)
 			ctx.session.state = 'awaitingPassword'
+
 			break
 		case 'awaitingBRSSemester':
 			if (ctx.message.text.startsWith('Семестр ')) {
@@ -864,7 +865,11 @@ bot.on('text', async ctx => {
 		case 'awaitingPassword':
 			const { login } = ctx.session
 			const password = ctx.message.text
+			// Удаляем сообщение с паролем
+			await ctx.deleteMessage()
 
+			// Отправляем сообщение "Проверка данных..." и сохраняем его ID
+			const processingMsg = await ctx.reply('Проверка данных...')
 			try {
 				const response = await axios.get(`https://iep.kgeu.ru/api/auth`, {
 					params: { login, password },
@@ -883,12 +888,16 @@ bot.on('text', async ctx => {
 						userData.FirstName,
 						userData.ParentName
 					)
+					// Удаляем сообщение "Проверка данных..."
+					await ctx.deleteMessage(processingMsg.message_id)
 					await ctx.reply(
 						`Здравствуйте, ${userData.LastName} ${userData.FirstName} ${userData.ParentName}! Вы успешно авторизованы.`,
 						createMainMenu(true, shortName)
 					)
 					await cacheAllSchedules(token)
 				} else {
+					// Удаляем сообщение "Проверка данных..."
+					await ctx.deleteMessage(processingMsg.message_id)
 					await ctx.reply(
 						'Ошибка авторизации. Пожалуйста, попробуйте еще раз.',
 						createMainMenu(false)
@@ -896,6 +905,8 @@ bot.on('text', async ctx => {
 				}
 			} catch (error) {
 				console.error('Ошибка при авторизации:', error)
+				// Удаляем сообщение "Проверка данных..."
+				await ctx.deleteMessage(processingMsg.message_id)
 				await ctx.reply(
 					'Произошла ошибка при авторизации. Введите правильные данные',
 					createMainMenu(false)
