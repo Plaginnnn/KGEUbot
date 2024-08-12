@@ -1,10 +1,22 @@
-// Импорт необходимых модулей
 import axios from 'axios'
+import { config } from 'dotenv'
 import schedule from 'node-schedule'
+import pkg from 'pg'
+const { Pool } = pkg
+
 import { Markup, Telegraf, session } from 'telegraf'
 
-// Токен бота
-const token = '7415179094:AAHyPLljfNicW5Kn_owAqbwmOhz5tnyn7wA'
+config() // Загружаем переменные из .env
+
+const pool = new Pool({
+	user: process.env.DB_USER,
+	host: process.env.DB_HOST,
+	database: process.env.DB_NAME,
+	password: process.env.DB_PASSWORD,
+	port: process.env.DB_PORT,
+})
+
+const token = process.env.TELEGRAM_BOT_TOKEN
 const bot = new Telegraf(token)
 
 const FIRST_WEEK_NUMBER = 2 // Начало отсчета со второй недели
@@ -59,6 +71,116 @@ const deleteAllPreviousMessages = async ctx => {
 		}
 	}
 }
+// Функция для сохранения пользователя в базе данных
+async function saveUser(userId, login, token, userData, notificationsEnabled) {
+	const client = await pool.connect()
+	try {
+		await client.query(
+			'INSERT INTO users (user_id, login, token, last_name, first_name, parent_name, email, position, notifications_enabled) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (user_id) DO UPDATE SET login = $2, token = $3, last_name = $4, first_name = $5, parent_name = $6, email = $7, position = $8, notifications_enabled = $9',
+			[
+				userId,
+				login,
+				token,
+				userData.LastName,
+				userData.FirstName,
+				userData.ParentName,
+				userData.EMail,
+				userData.Position,
+				notificationsEnabled,
+			]
+		)
+	} finally {
+		client.release()
+	}
+}
+//Функция для для проверки авторизации и создании меню
+async function createAuthenticatedMenu(ctx) {
+	const userId = ctx.from.id
+	const user = await getUser(userId)
+	const isAuthenticated = !!user
+	return createMainMenu(
+		isAuthenticated,
+		isAuthenticated
+			? getShortName(
+					user.userData.LastName,
+					user.userData.FirstName,
+					user.userData.ParentName
+			  )
+			: ''
+	)
+}
+
+// Функция для получения пользователя из базы данных
+async function getUser(userId) {
+	const client = await pool.connect()
+	try {
+		const result = await client.query(
+			'SELECT * FROM users WHERE user_id = $1',
+			[userId]
+		)
+		if (result.rows.length > 0) {
+			const user = result.rows[0]
+			return {
+				login: user.login,
+				token: user.token,
+				userData: {
+					LastName: user.last_name,
+					FirstName: user.first_name,
+					ParentName: user.parent_name,
+					EMail: user.email,
+					Position: user.position,
+				},
+				notificationsEnabled: user.notifications_enabled,
+			}
+		}
+		return null
+	} finally {
+		client.release()
+	}
+}
+
+// Функция для проверки валидности токена
+async function checkToken(token) {
+	try {
+		const response = await axios.get('https://iep.kgeu.ru/api/user', {
+			headers: { 'x-access-token': token },
+		})
+		return response.data.type === 'success'
+	} catch (error) {
+		console.error('Ошибка при проверке токена:', error)
+		return false
+	}
+}
+// Функция для обновления токена
+async function refreshToken(userId, login, password) {
+	try {
+		const response = await axios.get('https://iep.kgeu.ru/api/auth', {
+			params: { login, password },
+		})
+		if (response.data.type === 'success') {
+			const { token, userData } = response.data.payload
+			await saveUser(userId, login, token, userData, false)
+			return token
+		}
+		return null
+	} catch (error) {
+		console.error('Ошибка при обновлении токена:', error)
+		return null
+	}
+}
+
+// Функция для обновления настроек уведомлений
+async function updateNotificationSettings(userId, enabled) {
+	const client = await pool.connect()
+	try {
+		await client.query(
+			'UPDATE users SET notifications_enabled = $1 WHERE user_id = $2',
+			[enabled, userId]
+		)
+	} finally {
+		client.release()
+	}
+}
 
 // Инициализация сессии
 const initSession = (ctx, next) => {
@@ -69,15 +191,37 @@ const initSession = (ctx, next) => {
 }
 
 bot.use(initSession)
-
 // Middleware для проверки авторизации
-const authMiddleware = (ctx, next) => {
+const authMiddleware = async (ctx, next) => {
 	const userId = ctx.from.id
-	if (users.has(userId)) {
-		ctx.state.user = users.get(userId)
-		return next()
+	let user = await getUser(userId)
+	if (user) {
+		const isTokenValid = await checkToken(user.token)
+		if (isTokenValid) {
+			ctx.state.user = user
+			return next()
+		} else {
+			// Если токен недействителен, пытаемся обновить его
+			const newToken = await refreshToken(userId, user.login, user.password)
+			if (newToken) {
+				user.token = newToken
+				await saveUser(
+					userId,
+					user.login,
+					newToken,
+					user.userData,
+					user.notificationsEnabled
+				)
+				ctx.state.user = user
+				return next()
+			}
+		}
 	}
-	ctx.reply('Пожалуйста, авторизуйтесь с помощью кнопки "🔐 Войти"')
+	const mainMenu = createMainMenu(false)
+	await ctx.reply(
+		'Пожалуйста, авторизуйтесь с помощью кнопки "🔐 Войти"',
+		mainMenu
+	)
 }
 // Функция для получения сокращенного имени
 const getShortName = (lastName, firstName, parentName) => {
@@ -265,21 +409,30 @@ const createSemesterKeyboard = semesters => {
 
 //Функция для отправки ежедневных уведомлений
 const sendDailyNotification = async () => {
-	const tomorrow = new Date()
-	tomorrow.setDate(tomorrow.getDate() + 1)
+	const client = await pool.connect()
+	try {
+		const result = await client.query(
+			'SELECT * FROM users WHERE notifications_enabled = true'
+		)
+		const tomorrow = new Date()
+		tomorrow.setDate(tomorrow.getDate() + 1)
 
-	for (const [userId, user] of users.entries()) {
-		if (user.notificationsEnabled) {
+		for (const user of result.rows) {
 			const schedules = await getScheduleForDate(user.token, tomorrow)
 			if (schedules && schedules.length > 0) {
 				await bot.telegram.sendMessage(
-					userId,
+					user.user_id,
 					`Расписание на завтра:\n\n${formatScheduleMessage(schedules)}`
 				)
 			} else {
-				await bot.telegram.sendMessage(userId, 'На завтра расписания нет.')
+				await bot.telegram.sendMessage(
+					user.user_id,
+					'На завтра расписания нет.'
+				)
 			}
 		}
+	} finally {
+		client.release()
 	}
 }
 schedule.scheduleJob('0 18 * * *', sendDailyNotification) // Отправка уведомлений пользователю в 18:00
@@ -287,33 +440,15 @@ schedule.scheduleJob('0 18 * * *', sendDailyNotification) // Отправка у
 let isStartCommandRunning = false
 // Обработчик команды /start
 bot.command('start', async ctx => {
-	if (isStartCommandRunning) return // Предотвращаем повторный запуск
+	if (isStartCommandRunning) return
 	isStartCommandRunning = true
 
 	try {
 		await deleteAllPreviousMessages(ctx)
-		const userId = ctx.from.id
-		const isAuthenticated = users.has(userId)
-		const mainMenu = createMainMenu(
-			isAuthenticated,
-			isAuthenticated
-				? getShortName(
-						users.get(userId).userData.LastName,
-						users.get(userId).userData.FirstName,
-						users.get(userId).userData.ParentName
-				  )
-				: ''
-		)
+		const mainMenu = await createAuthenticatedMenu(ctx)
 		await ctx.reply(
 			`Добро пожаловать! Вас приветствует виртуальный помощник KGEUInfoBot.
-					С моей помощью Вы сможете:
-
-					📚 Смотреть информацию о ведомостях учёбы
-					🗓️ Просматривать расписание занятий
-					🔔 Получать уведомления о расписании
-					🔐 Авторизоваться в системе с использованием логина и пароля от сайта https://e.kgeu.ru/
-
-					Надеемся, что этот бот будет полезен для студентов в получении необходимой информации 🎓`,
+            ...`,
 			mainMenu
 		)
 	} finally {
@@ -426,7 +561,7 @@ bot.hears('📚 Зачетная книжка', authMiddleware, async ctx => {
 //Обработчик для отображения балов текущего семестра
 bot.hears('Баллы текущего семестра', authMiddleware, async ctx => {
 	const userId = ctx.from.id
-	const user = users.get(userId)
+	const user = await getUser(userId)
 	if (!user || !user.token) {
 		await ctx.reply('Пожалуйста, авторизуйтесь снова.')
 		return
@@ -449,7 +584,7 @@ bot.hears('Баллы текущего семестра', authMiddleware, async 
 //Обработчик для отображения ведомостей текущего семестра
 bot.hears('Зачетная книжка текущего семестра', authMiddleware, async ctx => {
 	const userId = ctx.from.id
-	const user = users.get(userId)
+	const user = await getUser(userId)
 	if (!user || !user.token) {
 		await ctx.reply('Пожалуйста, авторизуйтесь снова.')
 		return
@@ -469,7 +604,7 @@ bot.hears('Зачетная книжка текущего семестра', aut
 //Обработчики для выбора семестра БРС
 bot.hears('Выбрать семестр БРС', authMiddleware, async ctx => {
 	const userId = ctx.from.id
-	const user = users.get(userId)
+	const user = await getUser(userId)
 	if (!user || !user.token) {
 		await ctx.reply('Пожалуйста, авторизуйтесь снова.')
 		return
@@ -482,7 +617,7 @@ bot.hears('Выбрать семестр БРС', authMiddleware, async ctx => {
 //Обработчик для выбора семестра зачетной книжки
 bot.hears('Выбрать семестр зачетной книжки', authMiddleware, async ctx => {
 	const userId = ctx.from.id
-	const user = users.get(userId)
+	const user = await getUser(userId)
 	if (!user || !user.token) {
 		await ctx.reply('Пожалуйста, авторизуйтесь снова.')
 		return
@@ -536,42 +671,20 @@ bot.hears('Выбрать по дате', authMiddleware, async ctx => {
 
 // Обработчик для возврата в главное меню
 bot.hears('Вернуться в главное меню', async ctx => {
-	const userId = ctx.from.id
-	const isAuthenticated = users.has(userId)
-	const mainMenu = createMainMenu(
-		isAuthenticated,
-		isAuthenticated
-			? getShortName(
-					users.get(userId).userData.LastName,
-					users.get(userId).userData.FirstName,
-					users.get(userId).userData.ParentName
-			  )
-			: ''
-	)
+	const mainMenu = await createAuthenticatedMenu(ctx)
 	await ctx.reply('Главное меню:', mainMenu)
 })
 
 // Обработчик для просмотра социальных сетей
 bot.hears('🌐 Наши соц. сети', async ctx => {
 	await deleteAllPreviousMessages(ctx)
-	const userId = ctx.from.id
-	const isAuthenticated = users.has(userId)
-	const mainMenu = createMainMenu(
-		isAuthenticated,
-		isAuthenticated
-			? getShortName(
-					users.get(userId).userData.LastName,
-					users.get(userId).userData.FirstName,
-					users.get(userId).userData.ParentName
-			  )
-			: ''
-	)
+	const mainMenu = await createAuthenticatedMenu(ctx)
 	await ctx.reply(
 		`Официальный сайт КГЭУ: https://www.kgeu.ru/ 🌐
-		Образовательная платформа КГЭУ: https://e.kgeu.ru/ 🌐
-		Разработчик бота:
-		ВКонтакте: https://vk.com/plaginnnn 🌐
-		Telegram: @Plaginnnnn 🌐
+        Образовательная платформа КГЭУ: https://e.kgeu.ru/ 🌐
+        Разработчик бота:
+        ВКонтакте: https://vk.com/plaginnnn 🌐
+        Telegram: @Plaginnnnn 🌐
 `,
 		mainMenu
 	)
@@ -580,22 +693,23 @@ bot.hears('🌐 Наши соц. сети', async ctx => {
 // Обработчик для включения уведомлений
 bot.hears('🔔 Включить уведомления', async ctx => {
 	const userId = ctx.from.id
-	if (users.has(userId)) {
-		const user = users.get(userId)
-		user.notificationsEnabled = !user.notificationsEnabled
-		users.set(userId, user)
+	const user = await getUser(userId)
+	if (user) {
+		const newNotificationStatus = !user.notificationsEnabled
+		await updateNotificationSettings(userId, newNotificationStatus)
+		await saveUser(
+			userId,
+			user.login,
+			user.token,
+			user.userData,
+			newNotificationStatus
+		)
+		const mainMenu = await createAuthenticatedMenu(ctx)
 		await ctx.reply(
-			user.notificationsEnabled
+			newNotificationStatus
 				? 'Уведомления включены. Вы будете получать расписание на следующий день каждый вечер в 18:00.'
 				: 'Уведомления выключены',
-			createMainMenu(
-				true,
-				getShortName(
-					user.userData.LastName,
-					user.userData.FirstName,
-					user.userData.ParentName
-				)
-			)
+			mainMenu
 		)
 	} else {
 		await ctx.reply('Пожалуйста, авторизуйтесь для управления уведомлениями.')
@@ -605,31 +719,14 @@ bot.hears('🔔 Включить уведомления', async ctx => {
 // Обработчик для просмотра информации о боте
 bot.hears('ℹ️ Информация о боте', async ctx => {
 	await deleteAllPreviousMessages(ctx)
-	const userId = ctx.from.id
-	const isAuthenticated = users.has(userId)
-	const mainMenu = createMainMenu(
-		isAuthenticated,
-		isAuthenticated
-			? getShortName(
-					users.get(userId).userData.LastName,
-					users.get(userId).userData.FirstName,
-					users.get(userId).userData.ParentName
-			  )
-			: ''
-	)
+	const mainMenu = await createAuthenticatedMenu(ctx)
 	await ctx.reply(
 		`Информация о боте
 Основные возможности бота:
-Пользователи могут авторизоваться в боте, введя свой логин и пароль, такие же как на сайте https://e.kgeu.ru/ 🔐
-После успешной авторизации, данные пользователя (имя, фамилия, отчество, email, Роль ) отображаются в профиле. 👤
-Пользователи могут включать/выключать уведомления для напоминания расписания. 🔔
-Бот использует безопасное хранение данных пользователей, привязанных к их идентификаторам в Telegram. Однако, на данный момент реализация постоянного хранения данных в базе данных еще не завершена, поэтому сессия пользователя может сбрасываться при перезапуске бота. 💾
-Надеемся, что этот бот будет полезен для студентов в получении доступа к расписанию и успеваемости. 🎓
-`,
+...`,
 		mainMenu
 	)
 })
-
 // Обработчик для callback-запросов (для работы с календарем)
 bot.on('callback_query', async ctx => {
 	const userId = ctx.from.id
@@ -737,7 +834,7 @@ bot.hears('Export Google Calendar', authMiddleware, async ctx => {
 const exportScheduleToCSV = async token => {
 	let allSchedules = []
 	for (let week = FIRST_WEEK_NUMBER; week <= 30; week++) {
-		const weekSchedule = await (token, week)
+		const weekSchedule = await fetchScheduleForWeek(token, week)
 		if (weekSchedule) {
 			allSchedules = allSchedules.concat(weekSchedule)
 		}
@@ -746,73 +843,21 @@ const exportScheduleToCSV = async token => {
 	let csvContent =
 		'Subject,Start Date,Start Time,End Date,End Time,Location,Description\n'
 	allSchedules.forEach(item => {
-		const date = new Date(item.date).toISOString().split('T')[0]
-		csvContent += `"${item.discip.name} (${item.type.name})",${date},${item.timeStart},${date},${item.timeEnd},${item.auiditory},"${item.teacher.name}"\n`
+		try {
+			const date = new Date(item.date).toISOString().split('T')[0]
+			csvContent += `"${item.discip.name} (${item.type.name})",${date},${item.timeStart},${date},${item.timeEnd},${item.auiditory},"${item.teacher.name}"\n`
+		} catch (error) {
+			console.error(`Ошибка при обработке элемента расписания:`, item, error)
+		}
 	})
 
 	return Buffer.from(csvContent, 'utf8')
 }
-
 // Обработчик текстовых сообщений
 bot.on('text', async ctx => {
 	await deleteAllPreviousMessages(ctx)
 
 	const userId = ctx.from.id
-	if (ctx.message.text.startsWith('Семестр ')) {
-		const semester = parseInt(ctx.message.text.split(' ')[1])
-		const userId = ctx.from.id
-		const user = users.get(userId)
-
-		if (!user || !user.token) {
-			await ctx.reply('Пожалуйста, авторизуйтесь снова.')
-			return
-		}
-
-		if (ctx.session.state === 'awaitingBRSSemester') {
-			const brsData = await fetchBRS(user.token, semester)
-			if (brsData && brsData.brs) {
-				let message = `Баллы за ${semester} семестр:\n\n`
-				brsData.brs.forEach(subject => {
-					const totalPoints =
-						subject.points.reduce((sum, point) => sum + point.point, 0) +
-						subject.addPoints.reduce((sum, point) => sum + point, 0)
-					message += `${subject.discip}: ${totalPoints} баллов\n`
-				})
-				await ctx.reply(message)
-			} else {
-				await ctx.reply(
-					'Не удалось получить данные БРС для выбранного семестра.'
-				)
-			}
-		} else if (ctx.session.state === 'awaitingRecordSemester') {
-			const recordData = await fetchRecordBook(user.token, semester)
-			if (recordData && recordData.record) {
-				let message = `Зачетная книжка (семестр ${semester}):\n\n`
-				recordData.record.forEach(subject => {
-					message += `${subject.discip}: ${subject.mark} баллов, ${subject.result}\n`
-				})
-				await ctx.reply(message)
-			} else {
-				await ctx.reply(
-					'Не удалось получить данные зачетной книжки для выбранного семестра.'
-				)
-			}
-		}
-
-		// Возврат к главному меню после отображения данных
-		const mainMenu = createMainMenu(
-			true,
-			getShortName(
-				user.userData.LastName,
-				user.userData.FirstName,
-				user.userData.ParentName
-			)
-		)
-		await ctx.reply('Выберите дальнейшее действие:', mainMenu)
-
-		delete ctx.session.state
-		return
-	}
 
 	switch (ctx.session.state) {
 		case 'awaitingLogin':
@@ -820,55 +865,12 @@ bot.on('text', async ctx => {
 			await ctx.reply('Теперь введите ваш пароль:')
 			await deleteAllPreviousMessages(ctx)
 			ctx.session.state = 'awaitingPassword'
-
-			break
-		case 'awaitingBRSSemester':
-			if (ctx.message.text.startsWith('Семестр ')) {
-				const semester = parseInt(ctx.message.text.split(' ')[1])
-				const brsData = await fetchBRS(ctx.state.user.token, semester)
-				if (brsData) {
-					let message = `Баллы за ${semester} семестр:\n\n`
-					brsData.brs.forEach(subject => {
-						const totalPoints =
-							subject.points.reduce((sum, point) => sum + point.point, 0) +
-							subject.addPoints.reduce((sum, point) => sum + point, 0)
-						message += `${subject.discip}: ${totalPoints} баллов\n`
-					})
-					await ctx.reply(message)
-				} else {
-					await ctx.reply(
-						'Не удалось получить данные БРС для выбранного семестра.'
-					)
-				}
-			}
-			delete ctx.session.state
-			break
-
-		case 'awaitingRecordSemester':
-			if (ctx.message.text.startsWith('Семестр ')) {
-				const semester = parseInt(ctx.message.text.split(' ')[1])
-				const recordData = await fetchRecordBook(ctx.state.user.token, semester)
-				if (recordData) {
-					let message = `Зачетная книжка (семестр ${semester}):\n\n`
-					recordData.record.forEach(subject => {
-						message += `${subject.discip}: ${subject.mark} баллов, ${subject.result}\n`
-					})
-					await ctx.reply(message)
-				} else {
-					await ctx.reply(
-						'Не удалось получить данные зачетной книжки для выбранного семестра.'
-					)
-				}
-			}
-			delete ctx.session.state
 			break
 		case 'awaitingPassword':
 			const { login } = ctx.session
 			const password = ctx.message.text
-			// Удаляем сообщение с паролем
 			await ctx.deleteMessage()
 
-			// Отправляем сообщение "Проверка данных..." и сохраняем его ID
 			const processingMsg = await ctx.reply('Проверка данных...')
 			try {
 				const response = await axios.get(`https://iep.kgeu.ru/api/auth`, {
@@ -877,26 +879,19 @@ bot.on('text', async ctx => {
 
 				if (response.data.type === 'success') {
 					const { token, userData } = response.data.payload
-					users.set(userId, {
-						login,
-						token,
-						userData,
-						notificationsEnabled: false,
-					})
+					await saveUser(userId, login, token, userData, false)
+					users.set(userId, { token, userData, login, password }) // Обновляем Map в памяти
 					const shortName = getShortName(
 						userData.LastName,
 						userData.FirstName,
 						userData.ParentName
 					)
-					// Удаляем сообщение "Проверка данных..."
 					await ctx.deleteMessage(processingMsg.message_id)
 					await ctx.reply(
 						`Здравствуйте, ${userData.LastName} ${userData.FirstName} ${userData.ParentName}! Вы успешно авторизованы.`,
 						createMainMenu(true, shortName)
 					)
-					await cacheAllSchedules(token)
 				} else {
-					// Удаляем сообщение "Проверка данных..."
 					await ctx.deleteMessage(processingMsg.message_id)
 					await ctx.reply(
 						'Ошибка авторизации. Пожалуйста, попробуйте еще раз.',
@@ -905,7 +900,6 @@ bot.on('text', async ctx => {
 				}
 			} catch (error) {
 				console.error('Ошибка при авторизации:', error)
-				// Удаляем сообщение "Проверка данных..."
 				await ctx.deleteMessage(processingMsg.message_id)
 				await ctx.reply(
 					'Произошла ошибка при авторизации. Введите правильные данные',
@@ -916,35 +910,17 @@ bot.on('text', async ctx => {
 			delete ctx.session.state
 			delete ctx.session.login
 			break
-		case 'awaitingDate':
-			const dateInput = ctx.message.text
-			const [day, month, year] = dateInput.split('.').map(Number)
-			const date = new Date(year, month - 1, day)
-			if (!isNaN(date.getTime())) {
-				const formattedDate = date.toISOString().split('T')[0]
-				const schedule = scheduleCache.get(formattedDate)
-				if (schedule) {
-					await ctx.reply(formatScheduleMessage([schedule]))
-				} else {
-					await ctx.reply('На выбранную дату расписания нет.')
-				}
-			} else {
-				await ctx.reply(
-					'Неверный формат даты. Пожалуйста, введите дату в формате ДД.ММ.ГГГГ.'
-				)
-			}
-			delete ctx.session.state
-			break
 		default:
+			const user = await getUser(userId)
 			await ctx.reply(
 				'Пожалуйста, используйте меню для взаимодействия с ботом.',
 				createMainMenu(
-					users.has(userId),
-					users.has(userId)
+					!!user,
+					user
 						? getShortName(
-								users.get(userId).userData.LastName,
-								users.get(userId).userData.FirstName,
-								users.get(userId).userData.ParentName
+								user.userData.LastName,
+								user.userData.FirstName,
+								user.userData.ParentName
 						  )
 						: ''
 				)
