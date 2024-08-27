@@ -20,22 +20,23 @@ export async function checkToken(token) {
 	}
 }
 // Функция для обновления токена
- export async function refreshToken(userId, login, password) {
-	try {
-		const response = await axios.get('https://iep.kgeu.ru/api/auth', {
-			params: { login, password },
-		})
-		if (response.data.type === 'success') {
-			const { token, userData } = response.data.payload
-			await saveUser(userId, login, token, userData, false)
-			return token
-		}
-		return null
-	} catch (error) {
-		console.error('Ошибка при обновлении токена:', error)
-		return null
-	}
+async function refreshToken(userId, login, password) {
+    try {
+        const response = await axios.get('https://iep.kgeu.ru/api/auth', {
+            params: { login, password }
+        });
+        if (response.data.type === 'success') {
+            const { token, userData } = response.data.payload;
+            await saveUser(userId, login, token, userData, false, password);
+            return token;
+        }
+        return null;
+    } catch (error) {
+        console.error('Ошибка при обновлении токена:', error.message);
+        return null;
+    }
 }
+
 
 
 //Функция для для проверки авторизации и создании меню
@@ -51,41 +52,33 @@ export async function createAuthenticatedMenu(ctx) {
 					user.userData.FirstName,
 					user.userData.ParentName
 			  )
-			: ''
+			: ''	
 	)
 }
 // Middleware для проверки авторизации
 export const authMiddleware = async (ctx, next) => {
-	const userId = ctx.from.id
-	let user = await getUser(userId)
-	if (user) {
-		const isTokenValid = await checkToken(user.token)
-		if (isTokenValid) {
-			ctx.state.user = user
-			return next()
-		} else {
-			// Если токен недействителен, пытаемся обновить его
-			const newToken = await refreshToken(userId, user.login, user.password)
-			if (newToken) {
-				user.token = newToken
-				await saveUser(
-					userId,
-					user.login,
-					newToken,
-					user.userData,
-					user.notificationsEnabled
-				)
-				ctx.state.user = user
-				return next()
-			}
-		}
-	}
-	const mainMenu = createMainMenu(false)
-	await ctx.reply(
-		'Пожалуйста, авторизуйтесь с помощью кнопки "🔐 Войти"',
-		mainMenu
-	)
+    const userId = ctx.from.id;
+    let user = await getUser(userId);
+    if (user) {
+        const isTokenValid = await checkToken(user.token);
+        if (isTokenValid) {
+            ctx.state.user = user;
+            return next();
+        } else {
+            // Если токен недействителен, попытаться обновить его
+            const newToken = await refreshToken(userId, user.login, user.password);
+            if (newToken) {
+                user.token = newToken;
+                await saveUser(userId, user.login, newToken, user.userData, user.notificationsEnabled, user.password);
+                ctx.state.user = user;
+                return next();
+            }
+        }
+    }
+    const mainMenu = createMainMenu(false);
+    await ctx.reply('Пожалуйста, войдите в систему с помощью кнопки "🔐 Войти"', mainMenu);
 }
+
 // Инициализация сессии
 export const initSession = (ctx, next) => {
 	if (!ctx.session) {

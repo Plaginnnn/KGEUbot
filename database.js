@@ -5,6 +5,7 @@ const { Pool } = pg;
 
 export const pool = new Pool(dbConfig);
 
+
 // Функция для удаления данных пользователя из базы данных
 export async function deleteUserData(userId) {
     const client = await pool.connect()
@@ -15,11 +16,11 @@ export async function deleteUserData(userId) {
     }
 }
 // Функция для сохранения пользователя в базе данных
-export const saveUser = async (userId, login, token, userData, notificationsEnabled) => {
+export async function saveUser(userId, login, token, userData, notificationsEnabled, password) {
     const client = await pool.connect();
     try {
         await client.query(
-            'INSERT INTO users (user_id, login, token, last_name, first_name, parent_name, email, position, notifications_enabled) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (user_id) DO UPDATE SET login = $2, token = $3, last_name = $4, first_name = $5, parent_name = $6, email = $7, position = $8, notifications_enabled = $9',
+            'INSERT INTO users (user_id, login, token, last_name, first_name, parent_name, email, position, notifications_enabled, password) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT (user_id) DO UPDATE SET login = $2, token = $3, last_name = $4, first_name = $5, parent_name = $6, email = $7, position = $8, notifications_enabled = $9, password = $10',
             [
                 userId,
                 login,
@@ -30,15 +31,16 @@ export const saveUser = async (userId, login, token, userData, notificationsEnab
                 userData.EMail,
                 userData.Position,
                 notificationsEnabled,
+                password 
             ]
         );
     } finally {
         client.release();
     }
-};
+}
 
 // Функция для получения пользователя из базы данных
-export const getUser = async (userId) => {
+export async function getUser(userId) {
     const client = await pool.connect();
     try {
         const result = await client.query(
@@ -50,6 +52,7 @@ export const getUser = async (userId) => {
             return {
                 login: user.login,
                 token: user.token,
+                password: user.password, 
                 userData: {
                     LastName: user.last_name,
                     FirstName: user.first_name,
@@ -64,7 +67,8 @@ export const getUser = async (userId) => {
     } finally {
         client.release();
     }
-};
+}
+
 
 // Функция для обновления настроек уведомлений
  export const updateNotificationSettings = async (userId, enabled) => {

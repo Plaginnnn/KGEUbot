@@ -62,7 +62,7 @@ bot.hears('🔐 Войти', async (ctx) => {
 });
 
 // Обработчик для кнопки "Выйти"
-bot.hears('🚪 Выйти', async ctx => {
+bot.hears('🚪 Выйти с аккаунта', async ctx => {
     const userId = ctx.from.id
     await deleteUserData(userId)
     await ctx.reply('Вы успешно вышли из системы. Для повторного входа нажмите "🔐 Войти"', createMainMenu(false))
@@ -75,7 +75,7 @@ bot.hears('📅 Расписание', authMiddleware, async (ctx) => {
     await ctx.reply('Выберите опцию расписания:', createScheduleMenu);
 });
 // Обработчик для расписания на завтра
-bot.hears('Расписание на завтра', authMiddleware, async ctx => {
+bot.hears('На завтра', authMiddleware, async ctx => {
 	const token = ctx.state.user.token
 	const tomorrow = new Date()
 	tomorrow.setDate(tomorrow.getDate() + 1)
@@ -88,7 +88,7 @@ bot.hears('Расписание на завтра', authMiddleware, async ctx =>
 	}
 })
 // Обработчик для расписания на сегодня
-bot.hears('Расписание на сегодня', authMiddleware, async ctx => {
+bot.hears('На сегодня', authMiddleware, async ctx => {
 	const token = ctx.state.user.token
 	const today = new Date()
 
@@ -101,7 +101,7 @@ bot.hears('Расписание на сегодня', authMiddleware, async ctx 
 })
 
 // Обработчик для расписания на текущую неделю
-bot.hears('Расписание на текущую неделю', authMiddleware, async ctx => {
+bot.hears('На текущую неделю', authMiddleware, async ctx => {
 	const token = ctx.state.user.token
 	const today = new Date()
 	const weekStart = new Date(
@@ -265,7 +265,7 @@ bot.hears('Выбрать семестр зачетной книжки', authMid
 })
 
 // Обработчик для календаря
-bot.hears('Выбрать по дате', authMiddleware, async ctx => {
+bot.hears('Календарь', authMiddleware, async ctx => {
 	const now = new Date()
 	const year = now.getFullYear()
 	const month = now.getMonth()
@@ -468,78 +468,78 @@ bot.hears('Export Google Calendar', authMiddleware, async ctx => {
 })
 // Обработчик текстовых сообщений
 bot.on('text', async ctx => {
-	await deleteAllPreviousMessages(ctx)
+    await deleteAllPreviousMessages(ctx);
 
-	const userId = ctx.from.id
+    const userId = ctx.from.id;
 
-	switch (ctx.session.state) {
-		case 'awaitingLogin':
-			ctx.session.login = ctx.message.text
-			await ctx.reply('Теперь введите ваш пароль:')
-			await deleteAllPreviousMessages(ctx)
-			ctx.session.state = 'awaitingPassword'
-			break
-		case 'awaitingPassword':
-			const { login } = ctx.session
-			const password = ctx.message.text
-			await ctx.deleteMessage()
+    switch (ctx.session.state) {
+        case 'awaitingLogin':
+            ctx.session.login = ctx.message.text;
+            await ctx.reply('Теперь введите ваш пароль:');
+            await deleteAllPreviousMessages(ctx);
+            ctx.session.state = 'awaitingPassword';
+            break;
+        case 'awaitingPassword':
+            const { login } = ctx.session;
+            const password = ctx.message.text;
+            await ctx.deleteMessage();
 
-			const processingMsg = await ctx.reply('Проверка данных...')
-			try {
-				const response = await axios.get(`https://iep.kgeu.ru/api/auth`, {
-					params: { login, password },
-				})
+            const processingMsg = await ctx.reply('Проверка учетных данных...');
+            try {
+                const response = await axios.get(`https://iep.kgeu.ru/api/auth`, {
+                    params: { login, password },
+                });
 
-				if (response.data.type === 'success') {
-					const { token, userData } = response.data.payload
-					await saveUser(userId, login, token, userData, false)
-					users.set(userId, { token, userData, login, password }) // Обновляем Map в памяти
-					const shortName = getShortName(
-						userData.LastName,
-						userData.FirstName,
-						userData.ParentName
-					)
-					await ctx.deleteMessage(processingMsg.message_id)
-					await ctx.reply(
-						`Здравствуйте, ${userData.LastName} ${userData.FirstName} ${userData.ParentName}! Вы успешно авторизованы.`,
-						createMainMenu(true, shortName)
-					)
-				} else {
-					await ctx.deleteMessage(processingMsg.message_id)
-					await ctx.reply(
-						'Ошибка авторизации. Пожалуйста, попробуйте еще раз.',
-						createMainMenu(false)
-					)
-				}
-			} catch (error) {
-				console.error('Ошибка при авторизации:', error)
-				await ctx.deleteMessage(processingMsg.message_id)
-				await ctx.reply(
-					'Произошла ошибка при авторизации. Введите правильные данные',
-					createMainMenu(false)
-				)
-			}
+                if (response.data.type === 'success') {
+                    const { token, userData } = response.data.payload;
+                    await saveUser(userId, login, token, userData, false, password);
+                    users.set(userId, { token, userData, login, password }); // Обновление Map в памяти
+                    const shortName = getShortName(
+                        userData.LastName,
+                        userData.FirstName,
+                        userData.ParentName
+                    );
+                    await ctx.deleteMessage(processingMsg.message_id);
+                    await ctx.reply(
+                        `Добро пожаловать, ${userData.LastName} ${userData.FirstName} ${userData.ParentName}! Вы успешно вошли в систему.`,
+                        createMainMenu(true, shortName)
+                    );
+                } else {
+                    await ctx.deleteMessage(processingMsg.message_id);
+                    await ctx.reply(
+                        'Ошибка аутентификации. Пожалуйста, попробуйте снова.',
+                        createMainMenu(false)
+                    );
+                }
+            } catch (error) {
+                console.error('Ошибка во время аутентификации:', error);
+                await ctx.deleteMessage(processingMsg.message_id);
+                await ctx.reply(
+                    'Произошла ошибка во время аутентификации. Пожалуйста, введите правильные учетные данные.',
+                    createMainMenu(false)
+                );
+            }
 
-			delete ctx.session.state
-			delete ctx.session.login
-			break
-		default:
-			const user = await getUser(userId)
-			await ctx.reply(
-				'Пожалуйста, используйте меню для взаимодействия с ботом.',
-				createMainMenu(
-					!!user,
-					user
-						? getShortName(
-								user.userData.LastName,
-								user.userData.FirstName,
-								user.userData.ParentName
-						  )
-						: ''
-				)
-			)
-	}
-})
+            delete ctx.session.state;
+            delete ctx.session.login;
+            break;
+        default:
+            const user = await getUser(userId);
+            await ctx.reply(
+                'Пожалуйста, используйте меню для взаимодействия с ботом.',
+                createMainMenu(
+                    !!user,
+                    user
+                        ? getShortName(
+                            user.userData.LastName,
+                            user.userData.FirstName,
+                            user.userData.ParentName
+                        )
+                        : ''
+                )
+            );
+    }
+});
 
 // Обработчик ошибок
 bot.catch((err, ctx) => {

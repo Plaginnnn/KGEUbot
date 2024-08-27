@@ -9,11 +9,7 @@ export const users = new Map();
 
 dotenv.config();
 // Запуск бота
-bot.launch().then(() => {
-    console.log('Бот запущен');
-}).catch((error) => {
-    console.error('Ошибка при запуске бота:', error);
-});
+bot.launch()
 
 // Ежедневные уведомления
 schedule.scheduleJob('0 18 * * *', sendDailyNotification);
